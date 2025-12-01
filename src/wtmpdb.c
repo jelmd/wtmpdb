@@ -1118,7 +1118,6 @@ soft_reboots_count (void)
 
   if (sd_bus_open_system (&bus) < 0)
     {
-      fprintf (stderr, "Error: cannot open dbus");
       return -1;
     }
 
@@ -1129,15 +1128,6 @@ soft_reboots_count (void)
 				   &error, 'u', &soft_reboots_count);
   if (r < 0)
     {
-      /* systemd is too old, don't print error */
-      if (!sd_bus_error_has_name (&error, SD_BUS_ERROR_UNKNOWN_PROPERTY))
-	{
-	  /* error occured, log it and return to fallback code */
-	  if (error.message)
-	    fprintf (stderr,
-		     "Failed to get SoftRebootsCount property: %s\n",
-		     error.message);
-	}
       sd_bus_error_free (&error);
       return -1;
     }

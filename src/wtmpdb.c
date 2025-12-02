@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause
 
-  Copyright (c) 2023, Thorsten Kukuk <kukuk@suse.com>
+  Copyright (c) 2023, Thorsten Kukuk <kukuk@suse.com>,
+  Portions Copyright (c) 2025 by Jens Elkner <jel+wtmpdb@cs.ovgu.de>
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -40,6 +41,7 @@
 #include <inttypes.h>
 #include <arpa/inet.h>
 #include <sys/utsname.h>
+#include <assert.h>
 
 #if HAVE_AUDIT
 #include <libaudit.h>
@@ -61,6 +63,18 @@ static char *wtmpdb_path = NULL;
 #define TIMEFMT_NOTIME 4
 #define TIMEFMT_ISO    5
 #define TIMEFMT_COMPACT 6
+#define TIMEFMT_MAX 7
+/* Helper to map constants above to the proper fmtime string*/
+static const char *TM_FMT_SPEC[] = {
+	"%s",
+	"%s",
+	"%a %b %e %H:%M",
+	"%H:%M",
+	"%s",
+	"%FT%T%z",	/* Same ISO8601 format original last command uses */
+	"%F %T",
+	NULL
+};
 
 #define TIMEFMT_VALUE 255
 
@@ -70,7 +84,7 @@ static char *wtmpdb_path = NULL;
 #define LAST_TIMESTAMP_LEN 32
 
 static uint64_t wtmp_start = UINT64_MAX;
-static uint64_t after_reboot = 0;
+static uint64_t time_now = 0;
 
 /* options for last */
 static int hostlast = 0;
@@ -93,9 +107,9 @@ static int logout_len = 5; /* 5 = short, 24 = full */
 static const int host_len = 16; /* LAST_DOMAIN_LEN */
 static unsigned long maxentries = 0; /* max number of entries to show */
 static unsigned long currentry = 0; /* number of entries already printed */
-static time_t present = 0; /* Who was present at the specified time */
-static time_t since = 0; /* Who was logged in after this time? */
-static time_t until = 0; /* Who was logged in until this time? */
+static uint64_t present = 0; /* Who was present at the specified time in µs? */
+static uint64_t since = 0; /* Who was logged in after this time in µs? */
+static uint64_t until = 0; /* Who was logged in until this time in µs? */
 static char **match = NULL; /* user/tty to display only */
 
 typedef enum cmd_idx {
@@ -152,14 +166,8 @@ isipaddr (const char *string, int *addr_type,
   return is_ip;
 }
 
-static inline time_t
-from_usec(uint64_t usecs)
-{
-  return (time_t) usecs / USEC_PER_SEC;
-}
-
 static int
-parse_time (const char *str, time_t *arg)
+parse_time (const char *str, uint64_t *microseconds)
 {
   const char *abs_datetime_fmts[] = {
     "%Y%m%d%H%M%S",
@@ -211,7 +219,7 @@ parse_time (const char *str, time_t *arg)
     return -1;
 
 done:
-  *arg = mktime (&res);
+  *microseconds = mktime (&res) * USEC_PER_SEC;
 
   return 0;
 }
@@ -256,7 +264,7 @@ time_format (const char *fmt)
      login_fmt = TIMEFMT_COMPACT;
      login_len = 19;
      logout_fmt = TIMEFMT_COMPACT;
-     logout_len = 19;
+     logout_len = 19;	/* set to 0 if output mode is compact, i.e. no logout times */
      return TIMEFMT_COMPACT;
    }
 
@@ -264,55 +272,25 @@ time_format (const char *fmt)
 }
 
 static void
-format_time (int fmt, char *dst, size_t dstlen, uint64_t time)
+format_time (int fmt, char *dst, size_t dstlen, uint64_t microseconds)
 {
-  switch (fmt)
-    {
-    case TIMEFMT_CTIME:
-      {
-	time_t t = (time_t)time;
-	snprintf (dst, dstlen, "%s", ctime (&t));
-	dst[strlen (dst)-1] = '\0'; /* Remove trailing '\n' */
-	break;
-      }
-    case TIMEFMT_SHORT:
-      {
-	time_t t = (time_t)time;
+	time_t t = (time_t) (microseconds / USEC_PER_SEC);
+	if (fmt == TIMEFMT_CTIME) {
+		snprintf (dst, dstlen, "%s", ctime (&t));
+		dst[strlen (dst)-1] = '\0'; /* Remove trailing '\n' */
+		return;
+	} else if (fmt == TIMEFMT_NOTIME) {
+		*dst = '\0';
+		return;
+	}
+	assert(fmt > 0 && fmt < TIMEFMT_MAX);
+	const char *tm_fmt = TM_FMT_SPEC[fmt];
 	struct tm *tm = localtime (&t);
-	strftime (dst, dstlen, "%a %b %e %H:%M", tm);
-	break;
-      }
-    case TIMEFMT_HHMM:
-      {
-	time_t t = (time_t)time;
-	struct tm *tm = localtime (&t);
-	strftime (dst, dstlen, "%H:%M", tm);
-	break;
-      }
-    case TIMEFMT_ISO:
-      {
-	time_t t = (time_t)time;
-	struct tm *tm = localtime (&t);
-	strftime (dst, dstlen, "%FT%T%z", tm); /* Same ISO8601 format original last command uses */
-	break;
-      }
-    case TIMEFMT_COMPACT:
-      {
-	time_t t = (time_t)time;
-	struct tm *tm = localtime (&t);
-	strftime (dst, dstlen, "%F %T", tm);
-	break;
-      }
-    case TIMEFMT_NOTIME:
-      *dst = '\0';
-      break;
-    default:
-      abort ();
-    }
+	strftime (dst, dstlen, tm_fmt, tm);
 }
 
 static void
-calc_time_length(char *dst, size_t dstlen, uint64_t start, uint64_t stop)
+calc_time_length(char *dst, size_t dstlen, uint64_t start, uint64_t stop, char prefix)
 {
   uint64_t secs = (stop - start)/USEC_PER_SEC;
   int mins  = (secs / 60) % 60;
@@ -322,19 +300,19 @@ calc_time_length(char *dst, size_t dstlen, uint64_t start, uint64_t stop)
   if (!legacy) {
     secs %= 60;
     if (days)
-      snprintf (dst, dstlen, "(%" PRId64 "+%02d:%02d:%02lu)", days, hours, mins, secs);
+      snprintf (dst, dstlen, "%c(%" PRId64 "+%02d:%02d:%02lu)", prefix, days, hours, mins, secs);
     else if (hours)
-      snprintf (dst, dstlen, " (%02d:%02d:%02lu)", hours, mins, secs);
+      snprintf (dst, dstlen, "%c(%02d:%02d:%02lu)", prefix, hours, mins, secs);
     else
-      snprintf (dst, dstlen, " (00:%02d:%02lu)", mins, secs);
+      snprintf (dst, dstlen, "%c(00:%02d:%02lu)", prefix, mins, secs);
 	return;
   }
   if (days)
-    snprintf (dst, dstlen, "(%" PRId64 "+%02d:%02d)", days, hours, mins);
+    snprintf (dst, dstlen, "%c(%" PRId64 "+%02d:%02d)", prefix, days, hours, mins);
   else if (hours)
-    snprintf (dst, dstlen, " (%02d:%02d)", hours, mins);
+    snprintf (dst, dstlen, "%c(%02d:%02d)", prefix, hours, mins);
   else
-    snprintf (dst, dstlen, " (00:%02d)", mins);
+    snprintf (dst, dstlen, "%c(00:%02d)", prefix, mins);
 }
 
 /* map "soft-reboot" to "s-reboot" if we have only 8 characters
@@ -458,256 +436,223 @@ print_line (const char *user, const char *tty, const char *host,
     }
 }
 
+static void
+dump_entry(int argc, char **argv, char **azColName) {
+	for (int i = 0; i < argc; i++)
+		fprintf (stderr, " %s='%s'", azColName[i], argv[i] ? argv[i] : "NULL");
+	fprintf (stderr, "\n");
+}
+
+#define UPDATE_LAST_BOOT_TIME \
+	if (type == BOOT_TIME) {\
+		if (login_t < last_reboot) \
+			last_reboot = login_t;\
+		tty = "system boot";\
+	}
+
 static int
-print_entry (void *unused __attribute__((__unused__)),
-	     int argc, char **argv, char **azColName)
+print_entry(void *unused __attribute__((__unused__)),
+	int argc, char **argv, char **azColName)
 {
-  char host_buf[NI_MAXHOST];
-  struct times_buf {
-    char login[LAST_TIMESTAMP_LEN];
-    char logout[LAST_TIMESTAMP_LEN];
-    char length[LAST_TIMESTAMP_LEN];
-  } times;
-  char *endptr;
-  uint64_t logout_t = 0;
-  static uint64_t newer_boot = 0;
+	static uint64_t last_reboot = UINT64_MAX;
 
-  /* Yes, it's waste of time to let sqlite iterate through all entries
-     even if we don't need more anymore, but telling sqlite we don't
-     want more leads to a "query aborted" error... */
-  if (maxentries && currentry >= maxentries)
-    return 0;
+	char host_buf[NI_MAXHOST];
+	struct times_buf {
+		char login[LAST_TIMESTAMP_LEN];
+		char logout[LAST_TIMESTAMP_LEN];
+		char length[LAST_TIMESTAMP_LEN];
+	} times;
+	char *endptr;
+	uint64_t logout_t = 0;
+	int has_logout = argv[4] != NULL;
 
-  /* ID, Type, User, LoginTime, LogoutTime, TTY, RemoteHost, Service */
-  if (argc != 8)
-    {
-      fprintf (stderr, "Mangled entry:");
-      for (int i = 0; i < argc; i++)
-        fprintf (stderr, " %s=%s", azColName[i], argv[i] ? argv[i] : "NULL");
-      fprintf (stderr, "\n");
-      exit (EXIT_FAILURE);
-    }
+	/* Yes, it's waste of time to let sqlite iterate through all entries
+	   even if we don't need more anymore, but telling sqlite we don't
+	   want more leads to a "query aborted" error... */
+	if (maxentries && currentry >= maxentries)
+		return 0;
 
-  const int type = atoi (argv[1]);
-  const char *user = argv[2];
-  const char *tty = argv[5]?argv[5]:"?";
-  const char *host = argv[6]?argv[6]:"";
-  const char *service = argv[7]?argv[7]:"";
+	/* ID, Type, User, LoginTime, LogoutTime, TTY, RemoteHost, Service */
+	if (argc != 8) {
+		fprintf(stderr, "Mangled entry:");
+		dump_entry(argc, argv, azColName);
+		exit(EXIT_FAILURE);
+	}
 
-  uint64_t login_t = strtoull(argv[3], &endptr, 10);
-  if ((errno == ERANGE && login_t == ULLONG_MAX)
-      || (endptr == argv[3]) || (*endptr != '\0'))
-    fprintf (stderr, "Invalid numeric time entry for 'login': '%s'\n",
-	     argv[3]);
-  if (login_t < wtmp_start)
-    wtmp_start = login_t;
+	const int type = atoi(argv[1]);
+	const char *user = argv[2];
+	const char *tty = argv[5] ? argv[5] : "?";
+	const char *host = argv[6] ? argv[6] : "";
+	const char *service = argv[7] ? argv[7] : "";
 
-  /** Can't do it earlier because there is no contract that this function
-   * gets only invoked on lists sorted by Login time. Side effect is, that this
-   * way "wtmpdb begins ..." doesn't lie (as maxentries option does).
-   */
-  if (open_sessions && after_reboot > login_t)
+	uint64_t login_t = strtoull(argv[3] ? argv[3] : "", &endptr, 10);
+	if ((errno == ERANGE && login_t == ULLONG_MAX) || (endptr == argv[3])
+		|| (*endptr != '\0'))
+	{
+		fprintf(stderr, "%s: Invalid numeric time entry for 'login': '%s'\n",
+			argv[0], argv[3]);
+		return 0;
+	}
+	if (login_t < wtmp_start)
+		wtmp_start = login_t;
+
+	if ((since && (login_t < since)) || (until && (login_t > until))
+		|| (present && (present < login_t)))
+	{
+		UPDATE_LAST_BOOT_TIME
+		return 0;
+	}
+
+	if (has_logout) {
+		logout_t = strtoull(argv[4], &endptr, 10);
+		if ((errno == ERANGE && logout_t == ULLONG_MAX) || (endptr == argv[4])
+			|| (*endptr != '\0'))
+		{
+			fprintf(stderr, "%s: Invalid numeric time entry for 'logout': '%s'\n",
+				argv[0], argv[4]);
+			return 0;
+		}
+		if (logout_t > last_reboot)
+			logout_t = last_reboot;
+	} else {
+		logout_t = last_reboot;
+	}
+	if (present && logout_t < present) {
+		UPDATE_LAST_BOOT_TIME
+		return 0;
+	}
+
+	if (match) {
+		char **walk;
+
+		for (walk = match; *walk; walk++) {
+			if (strcmp(user, *walk) == 0 || strcmp(tty, *walk) == 0)
+				break;
+		}
+		if (*walk == NULL)
+			return 0;
+	}
+
+	format_time(login_fmt, times.login, sizeof(times.login), login_t);
+
+	if (has_logout) {
+		if (open_sessions) {
+			UPDATE_LAST_BOOT_TIME
+			return 0;
+		}
+		if (!compact)
+			format_time(logout_fmt, times.logout, sizeof(times.logout), logout_t);
+		calc_time_length(times.length, sizeof(times.length), login_t, logout_t, ' ');
+	} else {
+		/* login but no logout */
+		if (compact) {
+			if (last_reboot == UINT64_MAX) {
+				calc_time_length(times.length, sizeof(times.length), login_t, time_now, '.');
+			} else {
+				calc_time_length(times.length, sizeof(times.length), login_t, last_reboot, '?');
+			}
+		} else if (last_reboot != UINT64_MAX) {
+			snprintf(times.logout, sizeof(times.logout), "crash");
+			times.length[0] = '\0';
+		} else {
+			switch (type)
+			{
+			case USER_PROCESS:
+				if (logout_fmt == TIMEFMT_HHMM) {
+					snprintf(times.logout, sizeof(times.logout), "still");
+					snprintf(times.length, sizeof(times.length), "logged in");
+				} else {
+					snprintf(times.logout, sizeof(times.logout), "still logged in");
+					times.length[0] = '\0';
+				}
+				break;
+			case BOOT_TIME:
+				if (logout_fmt == TIMEFMT_HHMM) {
+					snprintf(times.logout, sizeof(times.logout), "still");
+					snprintf(times.length, sizeof(times.length), "running");
+				} else {
+					snprintf(times.logout, sizeof(times.logout), "still running");
+					times.length[0] = '\0';
+				}
+				break;
+			default:
+				snprintf(times.logout, sizeof(times.logout), "ERROR");
+				snprintf(times.length, sizeof(times.length), "Unknown: %d", type);
+				break;
+			}
+		}
+	}
+
+	char *print_service = NULL;
+	if (noservice) {
+		print_service = strdup("");
+	} else if (asprintf(&print_service, " %-12.12s", service) < 0) {
+		fprintf(stderr, "Out f memory");
+		exit(EXIT_FAILURE);
+	}
+
+	if (dflag && strlen(host) > 0) {
+		struct sockaddr_storage addr;
+		int addr_type = 0;
+
+		if (isipaddr(host, &addr_type, &addr)
+			&& getnameinfo((struct sockaddr *)&addr, sizeof(addr), host_buf,
+				sizeof(host_buf), NULL, 0, NI_NAMEREQD) == 0)
+		{
+			host = host_buf;
+		}
+	}
+
+	if (iflag && strlen(host) > 0) {
+		struct addrinfo hints, *result;
+
+		memset(&hints, 0, sizeof(hints));
+		hints.ai_family = AF_UNSPEC;	/* Allow IPv4 or IPv6 */
+		hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
+		hints.ai_flags = 0;
+		hints.ai_protocol = 0; /* Any protocol */
+		if (getaddrinfo(host, NULL, &hints, &result) == 0) {
+			if (result->ai_family == AF_INET
+				&& inet_ntop(result->ai_family,
+					&((struct sockaddr_in *)result->ai_addr)->sin_addr,
+					host_buf, sizeof(host_buf)) != NULL)
+			{
+				host = host_buf;
+			} else if (result->ai_family == AF_INET6
+				&& inet_ntop(result->ai_family,
+					&((struct sockaddr_in6 *)result->ai_addr)->sin6_addr,
+					host_buf, sizeof(host_buf)) != NULL)
+			{
+				host = host_buf;
+			}
+			freeaddrinfo(result);
+		}
+	}
+
+	if (xflag && (type == BOOT_TIME) && last_reboot != UINT64_MAX && has_logout) {
+		/* A little bit odd because this function is expected to be applied to
+			a record list ordered by login_t, at least if boot record selection
+			is enabled. So the best we can do is to inject a shutdown record
+			related to the current entry, which usually breaks the chronolog.
+			output wrt. login time. So either the user post-processes the output
+			to get a less confusing output, or main_last() needs to do it. For
+			now, we leave it to the user.
+		*/
+		struct times_buf shutdown;
+
+		format_time(login_fmt, shutdown.login, sizeof(shutdown.login), logout_t);
+		format_time(logout_fmt, shutdown.logout, sizeof(shutdown.logout), last_reboot);
+		calc_time_length(shutdown.length, sizeof(shutdown.length), logout_t, last_reboot, ' ');
+
+		print_line("shutdown", "system down", host, print_service,
+			shutdown.login, shutdown.logout, shutdown.length);
+	}
+	UPDATE_LAST_BOOT_TIME
+	print_line(user, tty, host, print_service, times.login, times.logout, times.length);
+
+	free(print_service);
+	currentry++;
 	return 0;
-
-  if (argv[4])
-    {
-      logout_t = strtoull(argv[4], &endptr, 10);
-      if ((errno == ERANGE && logout_t == ULLONG_MAX)
-	  || (endptr == argv[4]) || (*endptr != '\0'))
-	fprintf (stderr, "Invalid numeric time entry for 'logout': '%s'\n",
-		 argv[4]);
-    }
-
-  int swap = type == xflag && BOOT_TIME && logout_t != 0;
-
-  if ((since && since > from_usec(swap ? logout_t : login_t)) ||
-      (until && until < from_usec(login_t)) ||
-      (present && present < from_usec(login_t)))
-    {
-      if (xflag && (type == BOOT_TIME))
-        newer_boot = login_t;
-      return 0;
-    }
-
-  if (match)
-    {
-      char **walk;
-
-      for (walk = match; *walk; walk++)
-	{
-	  if (strcmp (user, *walk) == 0 ||
-	      strcmp(tty, *walk) == 0)
-	    break;
-	}
-      if (*walk == NULL)
-	return 0;
-    }
-
-  format_time (login_fmt, times.login, sizeof (times.login),
-	       login_t/USEC_PER_SEC);
-
-  if (logout_t != 0)
-    {
-	  if (open_sessions)
-	    return 0;
-      logout_t = strtoull(argv[4], &endptr, 10);
-      if ((errno == ERANGE && logout_t == ULLONG_MAX)
-	  || (endptr == argv[4]) || (*endptr != '\0'))
-	fprintf (stderr, "Invalid numeric time entry for 'logout': '%s'\n",
-		 argv[4]);
-
-      if (present && (0 < (logout_t/USEC_PER_SEC)) &&
-	  ((time_t)(logout_t/USEC_PER_SEC) < present))
-	return 0;
-	  if (compact) {
-		times.logout[0] = '\0';
-	  } else {
-		format_time (logout_fmt, times.logout, sizeof (times.logout),
-		   logout_t/USEC_PER_SEC);
-	  }
-      calc_time_length (times.length, sizeof(times.length), login_t, logout_t);
-    }
-  else /* login but no logout */
-    {
-	if (compact) {
-	  times.logout[0] = '\0';
-	  times.length[1] = '\0';
-	  times.length[0] = (after_reboot > login_t) ? '?' : '.';
-	}
-      else if (after_reboot > login_t)
-	{
-	  snprintf (times.logout, sizeof (times.logout), "crash");
-	  times.length[0] = '\0';
-	}
-      else
-	{
-	  switch (type)
-	    {
-	    case USER_PROCESS:
-	      if (logout_fmt == TIMEFMT_HHMM)
-		{
-		  snprintf (times.logout, sizeof (times.logout), "still");
-		  snprintf(times.length, sizeof(times.length), "logged in");
-		}
-	      else
-		{
-		  snprintf (times.logout, sizeof (times.logout), "still logged in");
-		  times.length[0] = '\0';
-		}
-	      break;
-	    case BOOT_TIME:
-	      if (logout_fmt == TIMEFMT_HHMM)
-		{
-		  snprintf (times.logout, sizeof (times.logout), "still");
-		  snprintf(times.length, sizeof(times.length), "running");
-		}
-	      else
-		{
-		  snprintf (times.logout, sizeof (times.logout), "still running");
-		  times.length[0] = '\0';
-		}
-	      break;
-	    default:
-	      snprintf (times.logout, sizeof (times.logout), "ERROR");
-	      snprintf(times.length, sizeof(times.length), "Unknown: %d", type);
-	      break;
-	    }
-	}
-    }
-
-  if (type == BOOT_TIME)
-    {
-      tty = "system boot";
-      after_reboot = login_t;
-    }
-
-  char *print_service = NULL;
-  if (noservice)
-    print_service = strdup ("");
-  else
-    {
-      if (asprintf (&print_service, " %-12.12s", service) < 0)
-	{
-	  fprintf (stderr, "Out f memory");
-	  exit (EXIT_FAILURE);
-	}
-    }
-
-  if (dflag && strlen (host) > 0)
-    {
-      struct sockaddr_storage addr;
-      int addr_type = 0;
-
-      if (isipaddr (host, &addr_type, &addr))
-	{
-	  if (getnameinfo ((struct sockaddr*)&addr, sizeof (addr), host_buf, sizeof (host_buf),
-			   NULL, 0, NI_NAMEREQD) == 0)
-	    host = host_buf;
-	}
-    }
-
-  if (iflag && strlen (host) > 0)
-    {
-      struct addrinfo  hints;
-      struct addrinfo  *result;
-
-      memset(&hints, 0, sizeof(hints));
-      hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
-      hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
-      hints.ai_flags = 0;
-      hints.ai_protocol = 0;          /* Any protocol */
-      if (getaddrinfo(host, NULL, &hints, &result) == 0)
-	{
-	  if (result->ai_family == AF_INET)
-	    {
-	      if (inet_ntop(result->ai_family,
-			    &((struct sockaddr_in *)result->ai_addr)->sin_addr,
-			    host_buf, sizeof (host_buf)) != NULL)
-		host = host_buf;
-	    }
-	  else if (result->ai_family == AF_INET6)
-	    {
-	      if (inet_ntop(result->ai_family,
-			    &((struct sockaddr_in6 *)result->ai_addr)->sin6_addr,
-			    host_buf, sizeof (host_buf)) != NULL)
-		host = host_buf;
-	    }
-
-	  freeaddrinfo(result);
-	}
-    }
-
-  if (xflag && (type == BOOT_TIME) && newer_boot != 0 && logout_t != 0)
-    {
-      struct times_buf shutdown;
-
-      format_time (login_fmt, shutdown.login, sizeof (shutdown.login),
-		   logout_t/USEC_PER_SEC);
-	  if (compact) {
-		shutdown.logout[0] = '\0';
-	  } else {
-        format_time (logout_fmt, shutdown.logout, sizeof (shutdown.logout),
-           newer_boot/USEC_PER_SEC);
-	  }
-      calc_time_length (shutdown.length, sizeof(shutdown.length), logout_t, newer_boot);
-
-      if ((!until || until >= from_usec(logout_t)) &&
-          (!since || since <= from_usec(logout_t)))
-          print_line ("shutdown", "system down", host, print_service,
-                      shutdown.login, shutdown.logout, shutdown.length);
-    }
-  if (xflag && (type == BOOT_TIME))
-    newer_boot = login_t;
-
-  if ((!until || until >= from_usec(login_t)) &&
-      (!since || since <= from_usec(login_t)))
-    print_line (user, tty, host, print_service, times.login, times.logout, times.length);
-
-  free (print_service);
-
-  currentry++;
-
-  return 0;
 }
 
 static void
@@ -887,9 +832,10 @@ main_last (int argc, char **argv)
 
   if (getenv("LAST_COMPACT")) {
 	  compact = 1;
-	  time_fmt = time_format("compact");
+	  time_fmt = time_format("compact"); /* We allow to overwrite login_t fmt */
 	  logout_len = 0;
   }
+
   while ((c = getopt_long (argc, argv, "0123456789acdf:FhijLn:op:RSs:t:uvwx",
 			   longopts, NULL)) != -1)
     {
@@ -911,16 +857,16 @@ main_last (int argc, char **argv)
 	  hostlast = 1;
 	  break;
 	case 'c':
-	  compact = 1;
-	  time_fmt = time_format("compact");
-	  logout_len = 0;
-	  break;
+		compact = 1;
+		time_fmt = time_format("compact"); /* We allow to overwrite login_t fmt */
+		logout_len = 0;
+		break;
 	case 'd':
-	  dflag = 1;
-	  break;
-        case 'f':
-          wtmpdb_path = optarg;
-          break;
+		dflag = 1;
+		break;
+	case 'f':
+		wtmpdb_path = optarg;
+		break;
 	case 'F':
 	  login_fmt = TIMEFMT_CTIME;
 	  login_len = 24;
@@ -1002,8 +948,10 @@ main_last (int argc, char **argv)
   if (argc > optind)
     match = argv + optind;
 
-  if (compact)
-	logout_len = 0;
+  if (compact) {
+	  logout_len = 0;
+	  parse_time("now", &time_now);
+  }
 
   if (nohostname && hostlast)
     {
@@ -1029,10 +977,22 @@ main_last (int argc, char **argv)
       usage (EXIT_FAILURE, CMD_LAST);
     }
 
-  if (jflag)
-    printf ("{\n   \"entries\": [\n");
+	if (present != 0) {
+		if (since != 0 && present < since)
+			return EXIT_SUCCESS;
+		if (until != 0) {
+			if (present > until)
+				return EXIT_SUCCESS;
+			until = present;
+		}
+	}
+	if (since != 0 && until != 0 && since > until)
+		return EXIT_SUCCESS;
 
-  if (wtmpdb_read_all (wtmpdb_path, uniq, print_entry, &error) != 0)
+	if (jflag)
+		printf("{\n   \"entries\": [\n");
+
+	if (wtmpdb_read_all(wtmpdb_path, uniq, print_entry, &error) != 0)
     {
       if (error)
         {
@@ -1053,8 +1013,7 @@ main_last (int argc, char **argv)
   else if (time_fmt != TIMEFMT_NOTIME)
     {
       char wtmptime[32];
-      format_time (time_fmt, wtmptime, sizeof (wtmptime),
-		   wtmp_start/USEC_PER_SEC);
+      format_time (time_fmt, wtmptime, sizeof(wtmptime), wtmp_start);
       if (jflag)
 	printf ("\n   ],\n   \"start\": \"%s\"\n", wtmptime);
       else
@@ -1211,11 +1170,9 @@ main_boot (int argc, char **argv)
 	{
 	  char timebuf[32];
 	  printf ("Boot time too far in the past, using current time:\n");
-	  format_time (TIMEFMT_CTIME, timebuf, sizeof (timebuf),
-		       time/USEC_PER_SEC);
+	  format_time (TIMEFMT_CTIME, timebuf, sizeof(timebuf), time);
 	  printf ("Boot time: %s\n", timebuf);
-	  format_time (TIMEFMT_CTIME, timebuf, sizeof (timebuf),
-		       now/USEC_PER_SEC);
+	  format_time (TIMEFMT_CTIME, timebuf, sizeof(timebuf), now);
 	  printf ("Current time: %s\n", timebuf);
 	}
       time = now;
@@ -1291,8 +1248,7 @@ main_boottime (int argc, char **argv)
     }
 
   char timebuf[32];
-  format_time (TIMEFMT_CTIME, timebuf, sizeof (timebuf),
-	       boottime/USEC_PER_SEC);
+  format_time (TIMEFMT_CTIME, timebuf, sizeof(timebuf), boottime);
 
   printf ("system boot %s\n", timebuf);
 

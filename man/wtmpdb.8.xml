@@ -80,11 +80,22 @@
 	      </term>
 	      <listitem>
 		<para>
-		  Hide the logout column and set the time format for the login
-		  column to <constant>compact</constant>. One may still overwrite the
-		  time format by using the <option>--time-format</option> option after
-		  this one. If the environment variable <envar>LAST_COMPACT</envar>
-		  is set, this option is applied before any others are processed.
+Hide the logout column and set the time format for the login column
+to <constant>compact</constant>. One may still override the time format by
+using the <option>--time-format</option> option after this one.
+If the <envar>LAST_COMPACT</envar> environment variable is set, this
+option is applied before any others are processed.
+		</para>
+		<para>
+If session entries do not yet have a recorded logout time, their
+session duration is calculated relative to the current time if no reboot
+occurred after the session started. If a reboot did occur after the
+session started, the duration is calculated relative to its
+boot time. Durations computed relative to boot are prefixed with a
+question mark ('?'), while durations computed relative to the current
+time are prefixed with a single dot ('.'). In either case the value is
+only an estimate and may be inaccurate (for example, if the session’s
+monitor process was killed earlier).
 		</para>
 	      </listitem>
 	    </varlistentry>

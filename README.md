@@ -40,3 +40,113 @@ E.g. a good place to insert this is near the end of one of the following files:
 The included **wtmpdbd** daemon provides a systemd Varlink interface to record logins and logouts without needing direct write access to the database file. Since this allows arbitrary tools to modify (or potentially trash) the wtmp DB, it should not be enabled unless absolutely necessary.
 
 As noted earlier, tools that allow access to the system should authenticate via PAM, and with **pam_wtmpdb.so** properly integrated, there is no need for any additional tool to modify the database directly (at least not in a way provided by the wtmpdb library or varlink interface right now).
+
+
+### Special Requirements
+To build **wtmpdbd**, systemd >= v257 is required. If you only want to build **wtmpdb** and **pam_wtmpdb.so**, it is recommended to disable systemd usage. However, if you wish for `wtmpdb boot` to differentiate between a soft and hard reboot (queries the systemd manager for SoftRebootsCount) and record it accordingly, you should keep systemd enabled. Without systemd, a boot gets simply recorded as `reboot`.
+
+### Build
+To build the binaries, you may run e.g.:
+```
+meson configure -Dsystemd=disabled --buildtype=release --prefix=/usr build/
+ninja -v -C build
+```
+
+### Example Output
+The following examples show the output of various `wtmpdb last` runs using its **compact mode** (**-c**) option:
+```
+> build/wtmpdb last -c
+hans     tty7         :0               2025-12-03 17:37:44 .(05:29:46)
+wurst    tty7         :0               2025-12-03 17:37:27 .(05:30:03)
+hans     tty7         :0               2025-12-03 14:26:30  (03:10:56)
+karl     ssh          123.45.67.89     2025-12-03 10:27:02  (00:06:11)
+ranseier ssh          123.45.67.890    2025-12-03 10:23:33 .(12:43:57)
+alexa    ssh          123.45.67.89     2025-12-03 08:49:25  (04:00:25)
+hans     ssh          12.345.678.90    2025-12-03 07:06:32 .(16:00:58)
+hans     ssh          12.345.678.90    2025-12-03 07:02:34  (00:01:41)
+wurst    tty7         :0               2025-12-02 20:18:49 .(1+02:48:41)
+hans     tty7         :0               2025-12-02 14:59:14  (05:20:04)
+hans     ssh          12.345.678.90    2025-12-02 13:53:10  (00:58:09)
+platz    ssh          123.45.678.90    2025-12-02 10:37:36  (00:58:26)
+alexa    ssh          123.45.67.89     2025-12-02 10:27:10  (00:00:59)
+alexa    ssh          123.45.67.89     2025-12-02 09:29:36  (00:00:46)
+alexa    ssh          123.456.789.01   2025-12-02 08:39:10  (00:11:53)
+alexa    ssh          123.456.789.01   2025-12-02 07:51:33  (00:55:11)
+hans     ssh          12.345.678.90    2025-12-02 00:49:31  (14:01:43)
+wurst    tty7         :0               2025-12-01 22:13:02 .(2+00:54:28)
+hans     tty7         :0               2025-12-01 15:00:24  (07:12:37)
+...
+reboot   system boot  6.8.0-84-generic 2025-11-26 20:53:04 .(7+02:14:26)
+andre    console      2025-11-26       2025-11-26 20:41:41 ?(00:11:22)
+platz    ssh          12.345.67.8      2025-11-26 18:51:49  (00:05:05)
+hans     tty7         :0               2025-11-26 18:45:05  (02:04:00)
+hans     ssh          901.23.45.67     2025-11-26 18:44:45  (02:07:21)
+andre    ssh          901.23.45.67     2025-11-26 18:44:18  (02:07:48)
+wurst    tty7         :0               2025-11-26 18:42:48  (00:02:17)
+andre    tty7         :0               2025-11-26 18:42:47 ?(02:10:17)
+wurst    tty7         :0               2025-11-26 18:42:26 ?(02:10:37)
+reboot   system boot  6.8.0-84-generic 2025-11-26 18:42:17  (02:06:49)
+andre    ssh          890.12.34.5      2025-11-26 18:40:36 ?(00:01:40)
+andre    ssh          678.90.12.345    2025-11-26 17:44:31 ?(00:57:45)
+hans     tty7         :0               2025-11-26 13:51:44 ?(04:50:32)
+hans     ssh          12.345.678.90    2025-11-26 12:51:04 ?(05:51:12)
+alexa    ssh          123.45.67.89     2025-11-26 10:14:22  (03:47:25)
+alexa    ssh          123.45.67.89     2025-11-26 10:12:39  (00:00:19)
+ranseier ssh          123.45.67.890    2025-11-26 09:21:10 ?(09:21:06)
+platz    ssh          678.90.12.34     2025-11-26 09:06:33  (07:36:46)
+hans     ssh          12.345.678.90    2025-11-26 08:00:20 ?(10:41:56)
+hans     ssh          12.345.678.90    2025-11-26 01:41:51  (11:47:04)
+
+wtmpdb begins 2025-11-26 01:41:51
+
+
+# show sessions without a logout entry (-o):
+> build/wtmpdb last -co
+
+hans     tty7         :0               2025-12-03 17:37:44 .(05:30:20)
+wurst    tty7         :0               2025-12-03 17:37:27 .(05:30:37)
+karl     ssh          123.45.67.890    2025-12-03 10:23:33 .(12:44:31)
+hans     ssh          12.345.678.90    2025-12-03 07:06:32 .(16:01:32)
+wurst    tty7         :0               2025-12-02 20:18:49 .(1+02:49:15)
+wurst    tty7         :0               2025-12-01 22:13:02 .(2+00:55:02)
+...
+reboot   system boot  6.8.0-84-generic 2025-11-26 20:53:04 .(7+02:15:00)
+ranse    console      2025-11-26       2025-11-26 20:41:41 ?(00:11:22)
+ranse    tty7         :0               2025-11-26 18:42:47 ?(02:10:17)
+wurst    tty7         :0               2025-11-26 18:42:26 ?(02:10:37)
+ranse    ssh          123.45.67.8      2025-11-26 18:40:36 ?(00:01:40)
+ranse    ssh          901.23.45.678    2025-11-26 17:44:31 ?(00:57:45)
+hans     tty7         :0               2025-11-26 13:51:44 ?(04:50:32)
+hans     ssh          12.345.678.90    2025-11-26 12:51:04 ?(05:51:12)
+karl     ssh          123.45.67.890    2025-11-26 09:21:10 ?(09:21:06)
+hans     ssh          12.345.678.90    2025-11-26 08:00:20 ?(10:41:56)
+...
+wtmpdb begins 2025-11-26 01:41:51
+
+
+# show sessions still running (-p now):
+> build/wtmpdb last -cp now
+hans     tty7         :0               2025-12-03 17:37:44 .(05:30:05)
+wurst    tty7         :0               2025-12-03 17:37:27 .(05:30:22)
+karl     ssh          123.45.67.890    2025-12-03 10:23:33 .(12:44:16)
+hans     ssh          12.345.678.90    2025-12-03 07:06:32 .(16:01:17)
+wurst    tty7         :0               2025-12-02 20:18:49 .(1+02:49:00)
+wurst    tty7         :0               2025-12-01 22:13:02 .(2+00:54:47)
+...
+reboot   system boot  6.8.0-84-generic 2025-11-26 20:53:04 .(7+02:14:45)
+
+wtmpdb begins 2025-09-16 03:04:00
+
+
+# show the latest session for each user (-u):
+> build/wtmpdb last -cu
+hans     console      2025-11-26       2025-11-26 20:41:41 .(7+02:26:33)
+wurst    tty7         :0               2025-12-03 17:37:44 .(05:30:30)
+karl     tty7         :0               2025-12-03 17:37:27 .(05:30:47)
+ranseier ssh          123.45.678.90    2025-12-02 10:37:36  (00:58:26)
+alexande ssh          123.45.67.890    2025-12-03 10:23:33 .(12:44:41)
+platz    ssh          123.45.67.89     2025-12-03 08:49:25  (04:00:25)
+andreas  ssh          123.45.67.89     2025-12-03 10:27:02  (00:06:11)
+
+wtmpdb begins 2025-11-26 20:41:41
+```

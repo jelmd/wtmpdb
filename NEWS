@@ -1,3 +1,13 @@
+Version 0.76.0
+* new options --compact (-c), --unique (-u), --open (-o), --legacy (-L)
+* fix selection of session entries to show
+* improve performance and calculate session duration properly
+* support symlinks wlast and wlastlog to wtmpdb
+* fix manpage install
+* last -x:
+	- apply --since and --until to split entries
+	- show shutdown entries before reboot ones
+
 Version 0.75.0
 * Use empty memory table instead of failing to read empty file
 * libwtmpdb: enhance/unify error messages

@@ -425,7 +425,8 @@ monitor process was killed earlier).
   <refsect1>
     <title>AUTHOR</title>
     <para>
-      wtmpdb was written by Thorsten Kukuk &lt;kukuk@suse.com&gt;.
+      wtmpdb was written by Thorsten Kukuk &lt;kukuk@suse.com&gt;,
+	enhanced and fixed by Jens Elkner &lt;jel+wtmpdb@cs.ovgu.de&gt;.
     </para>
   </refsect1>
 

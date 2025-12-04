@@ -1,0 +1,70 @@
+<refentry xmlns="http://docbook.org/ns/docbook" version="5.0" xml:id="wlast"
+	man.authors.section.enabled='0'>
+	<refentryinfo>
+		<productname>Linux</productname>
+		<title>System Management Commands</title>
+		<date>04 December 2025</date>
+	</refentryinfo>
+	<refmeta>
+		<refentrytitle>wlast</refentrytitle>
+		<manvolnum>8</manvolnum>
+	</refmeta>
+	<refnamediv>
+		<refname>wlast</refname>
+		<refpurpose>create reports about login and logouts, boot and shutdowns
+			from a wtmpdb database</refpurpose>
+	</refnamediv>
+	<refsynopsisdiv>
+		<cmdsynopsis>
+			<command>wlast</command>
+			<arg choice="opt" rep="repeat">
+				<replaceable class="option">option</replaceable>
+			</arg>
+			<arg choice="opt" rep="repeat">
+				<replaceable class="parameter">username</replaceable>
+			</arg>
+			<arg choice="opt" rep="repeat">
+				<replaceable class="parameter">tty</replaceable>
+			</arg>
+		</cmdsynopsis>
+	</refsynopsisdiv>
+
+	<refsection>
+		<title>DESCRIPTION</title>
+		<para>For user convenience, wlast is simply an alias for the command:</para>
+		<cmdsynopsis>
+			<command>wtmpdb last</command>
+			<arg choice="opt" rep="repeat">
+				<replaceable class="option">option</replaceable>
+			</arg>
+			<arg choice="opt" rep="repeat">
+				<replaceable class="parameter">username</replaceable>
+			</arg>
+			<arg choice="opt" rep="repeat">
+				<replaceable class="parameter">tty</replaceable>
+			</arg>
+		</cmdsynopsis>
+		<para> Sooner or later it is intended to replace the legacy 
+			<command>last</command> command. Until that happens, the name wlast
+			is used so both tools can coexist. For more details see
+			<citerefentry>
+				<refentrytitle>wtmpdb</refentrytitle>
+				<manvolnum>8</manvolnum>
+			</citerefentry>.</para>
+	</refsection>
+	<refsection>
+		<title>SEE ALSO</title>
+		<para>
+			<citerefentry>
+				<refentrytitle>wtmpdb</refentrytitle>
+				<manvolnum>8</manvolnum>
+			</citerefentry>,
+			<citerefentry>
+				<refentrytitle>last</refentrytitle>
+				<manvolnum>8</manvolnum>
+			</citerefentry>.
+		</para>
+	</refsection>
+
+</refentry>
+        

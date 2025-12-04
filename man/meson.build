@@ -10,7 +10,7 @@ xsltproc_flags = [
 custom_man_xsl = files('custom-man.xsl')
 
 xslt_cmd = [xsltproc_exe, '-o', '@OUTPUT0@'] + xsltproc_flags
-
+quiet = ['--stringparam', 'refentry.meta.get.quietly', '1']
 mandir8 = get_option('mandir') /'man8'
 
 if xsltproc_exe.found()
@@ -26,10 +26,24 @@ custom_target('wtmpdb.8',
               command : xslt_cmd + [custom_man_xsl, '@INPUT@'],
               install : want_man,
               install_dir : mandir8)
+custom_target('wlast.8',
+              input : 'wlast.8.xml',
+              output : 'wlast.8',
+              command : xslt_cmd + quiet +[custom_man_xsl, '@INPUT@'],
+              install : want_man,
+              install_dir : mandir8)
+custom_target('wlastlog.8',
+              input : 'wlastlog.8.xml',
+              output : 'wlastlog.8',
+              command : xslt_cmd + quiet +[custom_man_xsl, '@INPUT@'],
+              install : want_man,
+              install_dir : mandir8)
+if have_systemd257
 custom_target('wtmpdbd.8',
               input : 'wtmpdbd.8.xml',
               output : ['wtmpdbd.8', 'wtmpdbd.service.8', 'wtmpdbd.socket.8'],
               command : xslt_cmd + [custom_man_xsl, '@INPUT@'],
               install : want_man,
               install_dir : mandir8)
+endif
 endif

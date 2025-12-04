@@ -171,6 +171,9 @@ executable('wtmpdb',
            dependencies : [libaudit, libsystemd],
            install : true)
 
+install_symlink('wlast', pointing_to: 'wtmpdb', install_dir: 'bin')
+install_symlink('wlastlog', pointing_to: 'wtmpdb', install_dir: 'bin')
+
 if get_option('compat-symlink')
   install_symlink('last',
                   pointing_to: 'wtmpdb',
